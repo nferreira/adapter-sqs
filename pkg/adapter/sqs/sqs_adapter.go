@@ -38,6 +38,7 @@ type Adapter struct {
 	queueURL            *string
 	visibilityTimeout   int64
 	maxNumberOfMessages int64
+	waitTimeSeconds     int64
 	readMessageTimeout  time.Duration
 	businessService     service.BusinessService
 	shutdownChannel     chan bool
@@ -69,7 +70,8 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.queueURL = configureSqs(ctx, a)
 	a.visibilityTimeout = int64(env.GetInt("SQS_VISIBILITY_TIMEOUT", 60))
 	a.maxNumberOfMessages = int64(env.GetInt("SQS_MAX_NUMBER_OF_MESSAGES", 10))
-	a.readMessageTimeout = env.GetDuration("SQS_READ_MESSAGE_TIMEOUT_IN_SECONDS", time.Second*10)
+	a.readMessageTimeout = env.GetDuration("SQS_READ_MESSAGE_TIMEOUT_IN_SECONDS", time.Second, time.Second*60)
+	a.waitTimeSeconds = int64(env.GetInt("SQS_WAIT_TIME_SECONDS", 20))
 	go a.startWorker(ctx)
 	<-a.shutdownChannel
 	return nil
@@ -203,6 +205,7 @@ func (a *Adapter) readMessages(ctx context.Context) (*sqs.ReceiveMessageOutput, 
 		QueueUrl:            a.queueURL,
 		MaxNumberOfMessages: &a.maxNumberOfMessages,
 		VisibilityTimeout:   &a.visibilityTimeout,
+		WaitTimeSeconds:     &a.waitTimeSeconds,
 	})
 }
 
