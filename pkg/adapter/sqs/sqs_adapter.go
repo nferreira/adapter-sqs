@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	Headers       = service.HeadersField
-	Body          = service.BodyField
-	CorrelationId = "Correlation-Id"
-	AdapterId     = "sqs"
+	Headers        = service.HeadersField
+	Body           = service.BodyField
+	CorrelationId  = "Correlation-Id"
+	AdapterId      = "sqs"
+	MessageIdField = "MessageId"
+	MessageField   = "Message"
 )
 
 var (
@@ -121,52 +123,93 @@ func (a *Adapter) startWorker(ctx context.Context) {
 			fmt.Printf("Shutdown Requested: %t\n", shutdownRequested)
 			return
 		default:
-			{
-				fmt.Println("Trying to read messages...")
-				newCtx, cancel := context.WithTimeout(ctx, a.readMessageTimeout)
-				// TODO: check if cancel is being called
-				defer cancel()
-				msgResult, err := a.client.ReceiveMessageWithContext(newCtx, &sqs.ReceiveMessageInput{
-					AttributeNames: []*string{
-						aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
-					},
-					MessageAttributeNames: []*string{
-						aws.String(sqs.QueueAttributeNameAll),
-					},
-					QueueUrl:            a.queueURL,
-					MaxNumberOfMessages: &a.maxNumberOfMessages,
-					VisibilityTimeout:   &a.visibilityTimeout,
-				})
+			msgResult, err := a.readMessages(ctx)
+			if err != nil {
+				fmt.Printf("Error reading messages. Reason: [%s]\n", err.Error())
+			}
+			numberOfMessages := len(msgResult.Messages)
+			fmt.Printf("Got %d messages\n", numberOfMessages)
+			for i, message := range msgResult.Messages {
+				fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
+				var correlationId *string
+				var request service.Params
+				correlationId, request, err = a.parseMessage(message)
 				if err != nil {
-					fmt.Printf("Error reading messages. Reason %s\n", err.Error())
+					fmt.Printf("Failed to parse message, due to error: [%s]. Message Payload: [%s]\n",
+						err.Error(),
+						sqsMessageToString(message))
 				}
-				numberOfMessages := len(msgResult.Messages)
-				fmt.Printf("Got %d messages\n", numberOfMessages)
-				for i, message := range msgResult.Messages {
-					fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
-					var messageBuffer []byte
-					messageBuffer, err = base64.StdEncoding.DecodeString(*message.Body)
-					if err != nil {
-						// TODO: handle this
-					}
 
-					request := a.businessService.CreateRequest()
-					if err = json.Unmarshal(messageBuffer, &request); err != nil {
-						// TODO: handle this
-					}
-					params := service.Params(request.(map[string]interface{}))
-					result := a.businessService.Execute(ctx, params)
+				result := a.executeBusinessService(ctx, a.businessService, correlationId, request)
 
-					if result.Error != nil {
-						// TODO: handle
-					} else {
-						a.client.DeleteMessage(&sqs.DeleteMessageInput{
-							QueueUrl:      a.queueURL,
-							ReceiptHandle: message.ReceiptHandle,
-						})
-					}
+				if result.Error != nil {
+					fmt.Printf("Service execution failed, due to error: [%s]\n",
+						result.Error.Error())
+				} else {
+					a.client.DeleteMessage(&sqs.DeleteMessageInput{
+						QueueUrl:      a.queueURL,
+						ReceiptHandle: message.ReceiptHandle,
+					})
 				}
 			}
 		}
 	}
+}
+
+func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request service.Params, err error) {
+	var parsedMessage map[string]interface{}
+	err = json.Unmarshal([]byte(*sqsMessage.Body), &parsedMessage)
+	if err != nil {
+		fmt.Printf("Error: %s\n", err.Error())
+	}
+
+	messageId := parsedMessage[MessageIdField].(string)
+	correlationId = &messageId
+	var encodedMessage = parsedMessage[MessageField].(string)
+	var messageBuffer []byte
+	messageBuffer, err = base64.StdEncoding.DecodeString(encodedMessage)
+	if err != nil {
+		return nil, nil, err
+	}
+	request, err = a.createAndPopulateRequest(messageBuffer)
+
+	return correlationId, request, nil
+}
+
+func (a *Adapter) createAndPopulateRequest(messageBuffer []byte) (request service.Params, err error) {
+	request = a.businessService.CreateRequest().(map[string]interface{})
+	if err = json.Unmarshal(messageBuffer, &request); err != nil {
+		return nil, err
+	}
+	return request, nil
+}
+
+func (a *Adapter) executeBusinessService(ctx context.Context, businessService service.BusinessService, correlationId *string, params service.Params) *service.Result {
+	executionContext := service.NewExecutionContext(*correlationId, a.app)
+	execCtx := context.WithValue(ctx, service.ExecutionContextKey, executionContext)
+	return a.businessService.Execute(execCtx, params)
+}
+
+func (a *Adapter) readMessages(ctx context.Context) (*sqs.ReceiveMessageOutput, error) {
+	newCtx, cancel := context.WithTimeout(ctx, a.readMessageTimeout)
+	defer cancel()
+	return a.client.ReceiveMessageWithContext(newCtx, &sqs.ReceiveMessageInput{
+		AttributeNames: []*string{
+			aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
+		},
+		MessageAttributeNames: []*string{
+			aws.String(sqs.QueueAttributeNameAll),
+		},
+		QueueUrl:            a.queueURL,
+		MaxNumberOfMessages: &a.maxNumberOfMessages,
+		VisibilityTimeout:   &a.visibilityTimeout,
+	})
+}
+
+func sqsMessageToString(message *sqs.Message) string {
+	result, err := json.Marshal(message)
+	if err != nil {
+		return "<FAILED TO MARSHAL>"
+	}
+	return string(result)
 }
