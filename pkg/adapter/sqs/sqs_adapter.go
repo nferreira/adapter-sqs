@@ -13,6 +13,7 @@ import (
 	"github.com/nferreira/app/pkg/app"
 	"github.com/nferreira/app/pkg/env"
 	"github.com/nferreira/app/pkg/service"
+	"strings"
 	"time"
 )
 
@@ -65,7 +66,7 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.app = configureApp(ctx)
 	a.queueURL = configureSqs(ctx, a)
 	a.visibilityTimeout = int64(env.GetInt("SQS_VISIBILITY_TIMEOUT", 60))
-	a.maxNumberOfMessages = int64(env.GetInt("SQS_MAX_NUMBER_OF_MESSAGES", 100))
+	a.maxNumberOfMessages = int64(env.GetInt("SQS_MAX_NUMBER_OF_MESSAGES", 10))
 	a.readMessageTimeout = env.GetDuration("SQS_READ_MESSAGE_TIMEOUT_IN_SECONDS", time.Second*10)
 	go a.startWorker(ctx)
 	<-a.shutdownChannel
@@ -101,65 +102,71 @@ func configureSqs(ctx context.Context, adapter *Adapter) *string {
 	var urlResult *sqs.GetQueueUrlOutput
 	var err error
 	queueName := env.GetString("QUEUE_NAME", "")
+	if len(strings.TrimSpace(queueName)) == 0 {
+		panic("I need an queue name to start!!!")
+	}
 	if urlResult, err = adapter.client.GetQueueUrl(&sqs.GetQueueUrlInput{
 		QueueName: &queueName,
 	}); err != nil {
-		panic("I need an queue name to start!!!")
+		panic(fmt.Sprintf("Failed to get QueueUrl %s", err.Error()))
 	}
 	return urlResult.QueueUrl
 }
 
 func (a *Adapter) startWorker(ctx context.Context) {
-	select {
-	case shutdownRequested := <-a.shutdownChannel:
-		fmt.Printf("Shutdown Requested: %t\n", shutdownRequested)
-		return
-	default:
-		{
-			newCtx, cancel := context.WithTimeout(ctx, a.readMessageTimeout)
-			// TODO: check if cancel is being called
-			defer cancel()
-			msgResult, err := a.client.ReceiveMessageWithContext(newCtx, &sqs.ReceiveMessageInput{
-				AttributeNames: []*string{
-					aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
-				},
-				MessageAttributeNames: []*string{
-					aws.String(sqs.QueueAttributeNameAll),
-				},
-				QueueUrl:            a.queueURL,
-				MaxNumberOfMessages: &a.maxNumberOfMessages,
-				VisibilityTimeout:   &a.visibilityTimeout,
-			})
-			if err != nil {
-				fmt.Printf("Error reading messages. Reason %s\n", err.Error())
-			}
-			numberOfMessages := len(msgResult.Messages)
-			fmt.Printf("Got %d messages\n", numberOfMessages)
-			for i, message := range msgResult.Messages {
-				fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
-				var messageBuffer []byte
-				messageBuffer, err = base64.StdEncoding.DecodeString(*message.Body)
+	shutdownRequested := false
+	for !shutdownRequested {
+		select {
+		case shutdownRequested = <-a.shutdownChannel:
+			fmt.Printf("Shutdown Requested: %t\n", shutdownRequested)
+			return
+		default:
+			{
+				fmt.Println("Trying to read messages...")
+				newCtx, cancel := context.WithTimeout(ctx, a.readMessageTimeout)
+				// TODO: check if cancel is being called
+				defer cancel()
+				msgResult, err := a.client.ReceiveMessageWithContext(newCtx, &sqs.ReceiveMessageInput{
+					AttributeNames: []*string{
+						aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
+					},
+					MessageAttributeNames: []*string{
+						aws.String(sqs.QueueAttributeNameAll),
+					},
+					QueueUrl:            a.queueURL,
+					MaxNumberOfMessages: &a.maxNumberOfMessages,
+					VisibilityTimeout:   &a.visibilityTimeout,
+				})
 				if err != nil {
-					// TODO: handle this
+					fmt.Printf("Error reading messages. Reason %s\n", err.Error())
 				}
+				numberOfMessages := len(msgResult.Messages)
+				fmt.Printf("Got %d messages\n", numberOfMessages)
+				for i, message := range msgResult.Messages {
+					fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
+					var messageBuffer []byte
+					messageBuffer, err = base64.StdEncoding.DecodeString(*message.Body)
+					if err != nil {
+						// TODO: handle this
+					}
 
-				request := a.businessService.CreateRequest()
-				if err = json.Unmarshal(messageBuffer, &request); err != nil {
-					// TODO: handle this
-				}
-				params := service.Params(request.(map[string]interface{}))
-				result := a.businessService.Execute(ctx, params)
+					request := a.businessService.CreateRequest()
+					if err = json.Unmarshal(messageBuffer, &request); err != nil {
+						// TODO: handle this
+					}
+					params := service.Params(request.(map[string]interface{}))
+					result := a.businessService.Execute(ctx, params)
 
-				if result.Error != nil {
-					// TODO: handle
-				} else {
-					a.client.DeleteMessage(&sqs.DeleteMessageInput{
-						QueueUrl:      a.queueURL,
-						ReceiptHandle: message.ReceiptHandle,
-					})
+					if result.Error != nil {
+						// TODO: handle
+					} else {
+						a.client.DeleteMessage(&sqs.DeleteMessageInput{
+							QueueUrl:      a.queueURL,
+							ReceiptHandle: message.ReceiptHandle,
+						})
+					}
 				}
 			}
 		}
 	}
-
 }
