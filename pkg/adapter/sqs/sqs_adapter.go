@@ -159,10 +159,27 @@ func (a *Adapter) startWorker(ctx context.Context) {
 }
 
 func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request service.Params, err error) {
+	fmt.Printf("Received Message=[%s]\n", sqsMessageToString(sqsMessage))
+
+	if sqsMessage.Body == nil {
+		fmt.Printf("Message Body is empty\n")
+		return nil, nil, err
+	}
 	var parsedMessage map[string]interface{}
 	err = json.Unmarshal([]byte(*sqsMessage.Body), &parsedMessage)
 	if err != nil {
-		fmt.Printf("Error: %s\n", err.Error())
+		fmt.Printf("Failed to unmarshal message. Error: %s\n", err.Error())
+		return nil, nil, err
+	}
+
+	if parsedMessage[MessageIdField] == nil {
+		fmt.Println("Failed to get message id. It is empty")
+		return nil, nil, err
+	}
+
+	if parsedMessage[MessageField] == nil {
+		fmt.Println("Failed to get message body. It is empty")
+		return nil, nil, err
 	}
 
 	messageId := parsedMessage[MessageIdField].(string)
@@ -212,7 +229,8 @@ func (a *Adapter) readMessages(ctx context.Context) (*sqs.ReceiveMessageOutput, 
 func sqsMessageToString(message *sqs.Message) string {
 	result, err := json.Marshal(message)
 	if err != nil {
-		return "<FAILED TO MARSHAL>"
+		return fmt.Sprintf("<FAILED TO MARSHAL>: Reason: %s", err.Error())
 	}
 	return string(result)
 }
+
