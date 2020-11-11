@@ -180,7 +180,8 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 		return nil, nil, err
 	}
 
-	if parsedMessage[MessageIdField] == nil {
+	// we shall get the correlation id from on of these fields
+	if parsedMessage[MessageIdField] == nil && sqsMessage.MessageId == nil {
 		fmt.Println("Failed to get message id. It is empty")
 		return nil, nil, err
 	}
@@ -190,8 +191,14 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 		return nil, nil, err
 	}
 
-	messageId := parsedMessage[MessageIdField].(string)
-	correlationId = &messageId
+	var messageId *string = nil
+	if tmp, found := parsedMessage[MessageIdField].(string); found {
+		messageId = &tmp;
+	}
+	if messageId == nil {
+		messageId = sqsMessage.MessageId
+	}
+	correlationId = messageId
 	var encodedMessage = parsedMessage[MessageField].(string)
 	var messageBuffer []byte
 	messageBuffer, err = base64.StdEncoding.DecodeString(encodedMessage)
@@ -241,4 +248,3 @@ func sqsMessageToString(message *sqs.Message) string {
 	}
 	return string(result)
 }
-
