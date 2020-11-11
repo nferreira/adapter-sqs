@@ -165,8 +165,16 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 		fmt.Printf("Message Body is empty\n")
 		return nil, nil, err
 	}
+
+	var decodedBuff []byte
+	if decodedBuff, err = base64.StdEncoding.DecodeString(*sqsMessage.Body); err != nil {
+		// If for any reason the base64 decoding failed
+		// let's assume it is a regular string encoded JSON
+		decodedBuff = []byte(*sqsMessage.Body)
+	}
+
 	var parsedMessage map[string]interface{}
-	err = json.Unmarshal([]byte(*sqsMessage.Body), &parsedMessage)
+	err = json.Unmarshal(decodedBuff, &parsedMessage)
 	if err != nil {
 		fmt.Printf("Failed to unmarshal message. Error: %s\n", err.Error())
 		return nil, nil, err
