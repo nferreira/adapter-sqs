@@ -212,17 +212,19 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 
 	if tmp, found = parsedMessage[MessageField].(string); found {
 		encodedMessage = &tmp
+		var messageBuffer []byte
+		messageBuffer, err = base64.StdEncoding.DecodeString(*encodedMessage)
+		if err != nil {
+			return nil, nil, err
+		}
+		encodedMessage = aws.String(string(messageBuffer))
 	}
 	if encodedMessage == nil {
 		tmp = parsedMessage[service.BodyField].(string)
 		encodedMessage = &tmp
 	}
-	var messageBuffer []byte
-	messageBuffer, err = base64.StdEncoding.DecodeString(*encodedMessage)
-	if err != nil {
-		return nil, nil, err
-	}
-	request, err = a.createAndPopulateRequest(messageBuffer)
+
+	request, err = a.createAndPopulateRequest([]byte(*encodedMessage))
 
 	return correlationId, request, nil
 }
