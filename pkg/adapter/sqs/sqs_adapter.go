@@ -134,7 +134,7 @@ func (a *Adapter) startWorker(ctx context.Context) {
 			for i, message := range msgResult.Messages {
 				fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
 				var correlationId *string
-				var request service.Params
+				var request *service.Params
 				correlationId, request, err = a.parseMessage(message)
 				if err != nil {
 					fmt.Printf("Failed to parse message, due to error: [%s]. Message Payload: [%s]\n",
@@ -158,7 +158,7 @@ func (a *Adapter) startWorker(ctx context.Context) {
 	}
 }
 
-func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request service.Params, err error) {
+func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request *service.Params, err error) {
 	fmt.Printf("Received Message=[%s]\n", sqsMessageToString(sqsMessage))
 
 	if sqsMessage.Body == nil {
@@ -218,26 +218,32 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 			return nil, nil, err
 		}
 		encodedMessage = aws.String(string(messageBuffer))
-	}
-	if encodedMessage == nil {
-		tmp = parsedMessage[service.BodyField].(string)
-		encodedMessage = &tmp
+		if request, err = a.createAndPopulateRequest([]byte(*encodedMessage)); err != nil {
+			return nil, nil, err
+		}
+		return correlationId, request, nil
 	}
 
-	request, err = a.createAndPopulateRequest([]byte(*encodedMessage))
+	request = ToServiceParam(&parsedMessage)
 
 	return correlationId, request, nil
 }
 
-func (a *Adapter) createAndPopulateRequest(messageBuffer []byte) (request service.Params, err error) {
-	request = a.businessService.CreateRequest().(map[string]interface{})
+func ToServiceParam(o *map[string]interface{}) *service.Params {
+	p := service.Params(*o)
+	return &p
+}
+
+func (a *Adapter) createAndPopulateRequest(messageBuffer []byte) (request *service.Params, err error) {
+	tmp := a.businessService.CreateRequest().(map[string]interface{})
+	request = (*service.Params)(&tmp)
 	if err = json.Unmarshal(messageBuffer, &request); err != nil {
 		return nil, err
 	}
 	return request, nil
 }
 
-func (a *Adapter) executeBusinessService(ctx context.Context, businessService service.BusinessService, correlationId *string, params service.Params) *service.Result {
+func (a *Adapter) executeBusinessService(ctx context.Context, businessService service.BusinessService, correlationId *string, params *service.Params) *service.Result {
 	executionContext := service.NewExecutionContext(*correlationId, a.app)
 	execCtx := context.WithValue(ctx, service.ExecutionContextKey, executionContext)
 	return a.businessService.Execute(execCtx, params)
