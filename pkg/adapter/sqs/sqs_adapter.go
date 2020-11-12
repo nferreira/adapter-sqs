@@ -181,27 +181,44 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 	}
 
 	// we shall get the correlation id from on of these fields
+	// as on our local enrionment the first one is used
+	// but in prod using SNS the message is encoded in base64
 	if parsedMessage[MessageIdField] == nil && sqsMessage.MessageId == nil {
 		fmt.Println("Failed to get message id. It is empty")
 		return nil, nil, err
 	}
 
-	if parsedMessage[MessageField] == nil {
+	// we shall get the correlation id from on of these fields
+	// as on our local enrionment the first one is used
+	// but in prod using SNS the message is encoded in base64
+	if parsedMessage[MessageField] == nil &&
+		parsedMessage[service.BodyField] == nil {
 		fmt.Println("Failed to get message body. It is empty")
 		return nil, nil, err
 	}
 
 	var messageId *string = nil
-	if tmp, found := parsedMessage[MessageIdField].(string); found {
+	var tmp string
+	var found bool
+	if tmp, found = parsedMessage[MessageIdField].(string); found {
 		messageId = &tmp;
 	}
 	if messageId == nil {
 		messageId = sqsMessage.MessageId
 	}
 	correlationId = messageId
-	var encodedMessage = parsedMessage[MessageField].(string)
+
+	var encodedMessage *string = nil
+
+	if tmp, found = parsedMessage[MessageField].(string); found {
+		encodedMessage = &tmp
+	}
+	if encodedMessage == nil {
+		tmp = parsedMessage[service.BodyField].(string)
+		encodedMessage = &tmp
+	}
 	var messageBuffer []byte
-	messageBuffer, err = base64.StdEncoding.DecodeString(encodedMessage)
+	messageBuffer, err = base64.StdEncoding.DecodeString(*encodedMessage)
 	if err != nil {
 		return nil, nil, err
 	}
