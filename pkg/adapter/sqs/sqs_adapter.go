@@ -41,13 +41,17 @@ type Adapter struct {
 	waitTimeSeconds     int64
 	readMessageTimeout  time.Duration
 	businessService     service.BusinessService
+	debug               bool
 	shutdownChannel     chan bool
 }
 
 func New() adapter.Adapter {
+	debug := env.GetBool("DEBUG", false)
+
 	return &Adapter{
 		app:    nil,
 		client: newClient(),
+		debug: debug,
 	}
 }
 
@@ -130,9 +134,13 @@ func (a *Adapter) startWorker(ctx context.Context) {
 				fmt.Printf("Error reading messages. Reason: [%s]\n", err.Error())
 			}
 			numberOfMessages := len(msgResult.Messages)
-			fmt.Printf("Got %d messages\n", numberOfMessages)
+			if a.debug {
+				fmt.Printf("Got %d messages\n", numberOfMessages)
+			}
 			for i, message := range msgResult.Messages {
-				fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
+				if a.debug {
+					fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
+				}
 				var correlationId *string
 				var request *service.Params
 				correlationId, request, err = a.parseMessage(message)
@@ -159,7 +167,9 @@ func (a *Adapter) startWorker(ctx context.Context) {
 }
 
 func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request *service.Params, err error) {
-	fmt.Printf("Received Message=[%s]\n", sqsMessageToString(sqsMessage))
+	if a.debug {
+		fmt.Printf("Received Message=[%s]\n", sqsMessageToString(sqsMessage))
+	}
 
 	if sqsMessage.Body == nil {
 		fmt.Printf("Message Body is empty\n")
@@ -201,7 +211,7 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 	var tmp string
 	var found bool
 	if tmp, found = parsedMessage[MessageIdField].(string); found {
-		messageId = &tmp;
+		messageId = &tmp
 	}
 	if messageId == nil {
 		messageId = sqsMessage.MessageId
