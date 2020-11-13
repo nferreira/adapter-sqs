@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
@@ -13,8 +16,6 @@ import (
 	"github.com/nferreira/app/pkg/app"
 	"github.com/nferreira/app/pkg/env"
 	"github.com/nferreira/app/pkg/service"
-	"strings"
-	"time"
 )
 
 const (
@@ -51,7 +52,7 @@ func New() adapter.Adapter {
 	return &Adapter{
 		app:    nil,
 		client: newClient(),
-		debug: debug,
+		debug:  debug,
 	}
 }
 
@@ -148,6 +149,11 @@ func (a *Adapter) startWorker(ctx context.Context) {
 					fmt.Printf("Failed to parse message, due to error: [%s]. Message Payload: [%s]\n",
 						err.Error(),
 						sqsMessageToString(message))
+					a.client.DeleteMessage(&sqs.DeleteMessageInput{
+						QueueUrl:      a.queueURL,
+						ReceiptHandle: message.ReceiptHandle,
+					})
+					continue
 				}
 
 				result := a.executeBusinessService(ctx, a.businessService, correlationId, request)
