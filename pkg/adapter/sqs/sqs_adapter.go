@@ -134,7 +134,7 @@ func (a *Adapter) startWorker(ctx context.Context, workerId int) {
 			fmt.Printf("Worker-%d: Shutdown Requested: %t\n", workerId, shutdownRequested)
 			return
 		default:
-			fmt.Printf("Worker-%d: Running...: %t\n", workerId, shutdownRequested)
+			fmt.Printf("Worker-%d: Getting messages...\n", workerId)
 			msgResult, err := a.readMessages(ctx)
 			if err != nil {
 				fmt.Printf("Worker-%d: Error reading messages. Reason: [%s]\n", workerId, err.Error())
