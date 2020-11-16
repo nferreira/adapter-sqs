@@ -43,6 +43,7 @@ type Adapter struct {
 	readMessageTimeout  time.Duration
 	businessService     service.BusinessService
 	debug               bool
+	numberOfWorks       int
 	shutdownChannel     chan bool
 }
 
@@ -77,12 +78,15 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.maxNumberOfMessages = int64(env.GetInt("SQS_MAX_NUMBER_OF_MESSAGES", 10))
 	a.readMessageTimeout = env.GetDuration("SQS_READ_MESSAGE_TIMEOUT_IN_SECONDS", time.Second, time.Second*60)
 	a.waitTimeSeconds = int64(env.GetInt("SQS_WAIT_TIME_SECONDS", 20))
-	go a.startWorker(ctx)
-	<-a.shutdownChannel
+	a.numberOfWorks = env.GetInt("SQS_NUMBER_OF_WORKERS", 3)
+	for i := 0; i < a.numberOfWorks; i++ {
+		go a.startWorker(ctx, i)
+	}
 	return nil
 }
 
 func (a *Adapter) Stop(_ context.Context) error {
+	fmt.Printf("Shutdown requested...\n")
 	a.shutdownChannel <- true
 	return nil
 }
@@ -122,31 +126,33 @@ func configureSqs(ctx context.Context, adapter *Adapter) *string {
 	return urlResult.QueueUrl
 }
 
-func (a *Adapter) startWorker(ctx context.Context) {
+func (a *Adapter) startWorker(ctx context.Context, workerId int) {
 	shutdownRequested := false
 	for !shutdownRequested {
 		select {
 		case shutdownRequested = <-a.shutdownChannel:
-			fmt.Printf("Shutdown Requested: %t\n", shutdownRequested)
+			fmt.Printf("Worker-%d: Shutdown Requested: %t\n", workerId, shutdownRequested)
 			return
 		default:
+			fmt.Printf("Worker-%d: Running...: %t\n", workerId, shutdownRequested)
 			msgResult, err := a.readMessages(ctx)
 			if err != nil {
-				fmt.Printf("Error reading messages. Reason: [%s]\n", err.Error())
+				fmt.Printf("Worker-%d: Error reading messages. Reason: [%s]\n", workerId, err.Error())
 			}
 			numberOfMessages := len(msgResult.Messages)
 			if a.debug {
-				fmt.Printf("Got %d messages\n", numberOfMessages)
+				fmt.Printf("Worker-%d: Got %d messages\n", workerId, numberOfMessages)
 			}
 			for i, message := range msgResult.Messages {
 				if a.debug {
-					fmt.Printf("Processing %d of %d messages\n", i+1, numberOfMessages)
+					fmt.Printf("Worker-%d: Processing %d of %d messages\n", workerId, i+1, numberOfMessages)
 				}
 				var correlationId *string
 				var request *service.Params
-				correlationId, request, err = a.parseMessage(message)
+				correlationId, request, err = a.parseMessage(workerId, message)
 				if err != nil {
-					fmt.Printf("Failed to parse message, due to error: [%s]. Message Payload: [%s]\n",
+					fmt.Printf("Worker-%d: Failed to parse message, due to error: [%s]. Message Payload: [%s]\n",
+						workerId,
 						err.Error(),
 						sqsMessageToString(message))
 					a.client.DeleteMessage(&sqs.DeleteMessageInput{
@@ -159,7 +165,8 @@ func (a *Adapter) startWorker(ctx context.Context) {
 				result := a.executeBusinessService(ctx, a.businessService, correlationId, request)
 
 				if result.Error != nil {
-					fmt.Printf("Service execution failed, due to error: [%s]\n",
+					fmt.Printf("Worker-%d: Service execution failed, due to error: [%s]\n",
+						workerId,
 						result.Error.Error())
 				} else {
 					a.client.DeleteMessage(&sqs.DeleteMessageInput{
@@ -170,15 +177,16 @@ func (a *Adapter) startWorker(ctx context.Context) {
 			}
 		}
 	}
+	fmt.Printf("Worker-%d: Stopping\n", workerId)
 }
 
-func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, request *service.Params, err error) {
+func (a *Adapter) parseMessage(workerId int, sqsMessage *sqs.Message) (correlationId *string, request *service.Params, err error) {
 	if a.debug {
-		fmt.Printf("Received Message=[%s]\n", sqsMessageToString(sqsMessage))
+		fmt.Printf("Worker-%d: Received Message=[%s]\n", workerId, sqsMessageToString(sqsMessage))
 	}
 
 	if sqsMessage.Body == nil {
-		fmt.Printf("Message Body is empty\n")
+		fmt.Printf("Worker-%d: Message Body is empty\n", workerId)
 		return nil, nil, err
 	}
 
@@ -192,7 +200,9 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 	var parsedMessage map[string]interface{}
 	err = json.Unmarshal(decodedBuff, &parsedMessage)
 	if err != nil {
-		fmt.Printf("Failed to unmarshal message. Error: %s\n", err.Error())
+		fmt.Printf("Worker-%d: Failed to unmarshal message. Error: %s\n",
+			workerId,
+			err.Error())
 		return nil, nil, err
 	}
 
@@ -200,7 +210,8 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 	// as on our local enrionment the first one is used
 	// but in prod using SNS the message is encoded in base64
 	if parsedMessage[MessageIdField] == nil && sqsMessage.MessageId == nil {
-		fmt.Println("Failed to get message id. It is empty")
+		fmt.Printf("Worker-%d: Failed to get message id. It is empty\n",
+			workerId)
 		return nil, nil, err
 	}
 
@@ -209,7 +220,8 @@ func (a *Adapter) parseMessage(sqsMessage *sqs.Message) (correlationId *string, 
 	// but in prod using SNS the message is encoded in base64
 	if parsedMessage[MessageField] == nil &&
 		parsedMessage[service.BodyField] == nil {
-		fmt.Println("Failed to get message body. It is empty")
+		fmt.Printf("Worker-%d: Failed to get message body. It is empty",
+			workerId)
 		return nil, nil, err
 	}
 
