@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/nferreira/adapter-sqs/pkg/adapter/sqs/connector"
 	"github.com/nferreira/adapter/pkg/adapter"
 	"github.com/nferreira/app/pkg/app"
 	"github.com/nferreira/app/pkg/env"
@@ -25,6 +26,7 @@ const (
 	AdapterId      = "sqs"
 	MessageIdField = "MessageId"
 	MessageField   = "Message"
+	ReplyTo        = "ReplyTo"
 )
 
 var (
@@ -44,12 +46,14 @@ type Adapter struct {
 	businessService     service.BusinessService
 	numberOfWorks       int
 	shutdownChannel     chan bool
+	connector           *connector.Connector
 }
 
 func New() adapter.Adapter {
 	return &Adapter{
-		app:    nil,
-		client: newClient(),
+		app:        nil,
+		client:     newClient(),
+		connector:  connector.New(),
 	}
 }
 
@@ -151,6 +155,21 @@ func (a *Adapter) startWorker(ctx context.Context, workerId int) {
 				}
 
 				result := a.executeBusinessService(ctx, a.businessService, correlationId, request)
+
+				if r, found := result.Headers[ReplyTo]; found {
+					if replyTo, isValid := r.(string); isValid {
+						if err = a.replyTo(ctx, replyTo, result); err != nil {
+							fmt.Printf("Worker-%d: Replying message to [%s] failed due to [%s]\n",
+								workerId,
+								replyTo,
+								err.Error())
+						}
+					} else {
+						fmt.Printf("Worker-%d: ReplyTo header was present but was not an string. It was %+v\n",
+							workerId,
+							r)
+					}
+				}
 
 				if result.Error != nil {
 					fmt.Printf("Worker-%d: Service execution failed, due to error: [%s]\n",
@@ -276,6 +295,21 @@ func (a *Adapter) readMessages(ctx context.Context) (*sqs.ReceiveMessageOutput, 
 		VisibilityTimeout:   &a.visibilityTimeout,
 		WaitTimeSeconds:     &a.waitTimeSeconds,
 	})
+}
+
+func (a *Adapter) replyTo(ctx context.Context, replyTo string, result *service.Result) (err error) {
+	response := make(map[string]interface{})
+	response["code"] = result.Code
+	response["headers"] = result.Headers
+	response["body"] = result.Response
+	if result.Error != nil {
+		response["error"] = result.Error.Error()
+	}
+	var message []byte
+	if message, err = json.Marshal(response); err == nil {
+		err = a.connector.Publish(ctx, replyTo, make(map[string]*string), string(message))
+	}
+	return err
 }
 
 func sqsMessageToString(message *sqs.Message) string {
