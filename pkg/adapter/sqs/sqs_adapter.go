@@ -307,7 +307,7 @@ func (a *Adapter) replyTo(ctx context.Context, replyTo string, result *service.R
 	}
 	var message []byte
 	if message, err = json.Marshal(response); err == nil {
-		err = a.connector.Publish(ctx, replyTo, make(map[string]*string), string(message))
+		err = a.connector.Publish(ctx, replyTo, string(message))
 	}
 	return err
 }

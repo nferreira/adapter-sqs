@@ -26,24 +26,11 @@ func New() *Connector {
 }
 
 func (c *Connector) Publish(ctx context.Context, destination string,
-	messageAttributes map[string]*string, message string) (err error) {
+	message string) (err error) {
 	_, err = c.sqs.SendMessageWithContext(ctx, &sqs.SendMessageInput{
 		MessageBody:       &message,
 		QueueUrl:          &destination,
-		MessageAttributes: toMessageAttributes(messageAttributes),
+		MessageAttributes: nil,
 	})
 	return err
-}
-
-func toMessageAttributes(attributes map[string]*string) map[string]*sqs.MessageAttributeValue {
-	a := make(map[string]*sqs.MessageAttributeValue)
-
-	for key, value := range attributes {
-		a[key] = &sqs.MessageAttributeValue{
-			DataType:    &StringType,
-			StringValue: value,
-		}
-	}
-
-	return a
 }
